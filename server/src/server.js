@@ -6,6 +6,7 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 const caseRoutes = require("./routes/cases");
+const { connectToDatabase } = require("./config/database");
 
 const app = express();
 const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
@@ -16,6 +17,14 @@ app.use(cors({ origin: (origin, callback) => {
   return callback(new Error("Origin is not allowed by CORS"));
 } }));
 app.use(express.json({ limit: "16kb" }));
+app.use(async (_req, _res, next) => {
+  try {
+    await connectToDatabase();
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+});
 app.get("/", (_req, res) => res.json({ message: "AI Mystery Room backend is running!" }));
 app.get("/api/health", (_req, res) => res.json({ success: true, database: mongoose.connection.readyState === 1 ? "connected" : "disconnected" }));
 app.use("/api/cases", caseRoutes);
@@ -36,8 +45,7 @@ app.use((error, _req, res, _next) => {
 
 const PORT = process.env.PORT || 5000;
 async function start() {
-  if (!process.env.MONGODB_URI) throw new Error("MONGODB_URI is not configured");
-  await mongoose.connect(process.env.MONGODB_URI);
+  await connectToDatabase();
   console.log("MongoDB connected successfully!");
   app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 }
