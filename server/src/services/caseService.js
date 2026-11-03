@@ -70,9 +70,13 @@ function normalizeGeneratedEnums(generated) {
 function isTemporaryUnavailable(error) {
   const status = error?.status ?? error?.statusCode ?? error?.response?.status;
   const normalizedStatus = Number(status);
-  const description = `${error?.message || ""} ${error?.statusText || ""} ${error?.code || ""} ${error?.name || ""}`;
+  const description = `${error?.message || ""} ${error?.statusText || ""} ${error?.code || ""} ${error?.name || ""} ${error?.cause?.code || ""}`;
   return [408, 429, 500, 502, 503, 504].includes(normalizedStatus)
-    || /\bUNAVAILABLE\b|high demand|rate.?limit|RESOURCE_EXHAUSTED|tim(?:e|ed)[ -]?out|ETIMEDOUT|ECONNRESET|temporary provider (?:failure|error|unavailable)/i.test(description);
+    || /\bUNAVAILABLE\b|high demand|rate.?limit|RESOURCE_EXHAUSTED|tim(?:e|ed)[ -]?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT|temporary provider (?:failure|error|unavailable)/i.test(description);
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function validateGeneratedMystery(value, rules) {
@@ -99,33 +103,29 @@ async function generateMystery(premise, difficulty) {
   const rules = DIFFICULTIES[difficulty];
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { timeout: 45000, retryOptions: { attempts: 1 } } });
   const primaryModel = process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash-lite";
-  const fallbackModel = "gemini-3.6-flash";
+  const fallbackModel = process.env.GEMINI_FALLBACK_MODEL?.trim() || "gemini-3.6-flash";
+  const models = [primaryModel, fallbackModel];
   let lastError;
-  let fallbackOnNextAttempt = false;
-  let allAttemptsTemporary = true;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < models.length; attempt += 1) {
+    if (attempt > 0) await wait(300 * (2 ** (attempt - 1)));
     try {
-      const model = fallbackOnNextAttempt ? fallbackModel : primaryModel;
-      const retryNote = attempt ? " Previous output was invalid; follow the schema and counts exactly." : "";
+      const model = models[attempt];
       const response = await ai.models.generateContent({
         model,
-        contents: `Create a wholly fictional, fair-play detective mystery based on this premise: ${premise}\nDifficulty: ${difficulty}. Return JSON only. Exactly ${rules.suspects} suspects, ${rules.clues} clues and ${rules.hints} hints. Include 4-7 fictional evidence items. All suspects must have plausible motives. Have one clearly deducible culprit, and support the solution with clue/evidence IDs. Hints must not name or directly reveal the culprit. Do not accuse real people. IMPORTANT ENUM RULE: Every clues[].importance value must be exactly one lowercase value: "low", "medium", or "high". Every evidence[].type value must be exactly one lowercase value: "text", "message", "cctv", "image", "witness", "document", or "object". Do not return synonyms, uppercase values, or any other values. Fields: title, story, suspects[{id,name,age,description,relationship,motive,background}], clues[{id,title,description,importance}], hints[{id,text}], evidence[{id,type,title,description,content,timestamp,location}], culprit (suspect id), solution (full explanation), supportingEvidence (array of clue/evidence ids).${retryNote}`,
+        contents: `Create a wholly fictional, fair-play detective mystery based on this premise: ${premise}\nDifficulty: ${difficulty}. Return JSON only. Exactly ${rules.suspects} suspects, ${rules.clues} clues and ${rules.hints} hints. Include 4-7 fictional evidence items. All suspects must have plausible motives. Have one clearly deducible culprit, and support the solution with clue/evidence IDs. Hints must not name or directly reveal the culprit. Do not accuse real people. IMPORTANT ENUM RULE: Every clues[].importance value must be exactly one lowercase value: "low", "medium", or "high". Every evidence[].type value must be exactly one lowercase value: "text", "message", "cctv", "image", "witness", "document", or "object". Do not return synonyms, uppercase values, or any other values. Fields: title, story, suspects[{id,name,age,description,relationship,motive,background}], clues[{id,title,description,importance}], hints[{id,text}], evidence[{id,type,title,description,content,timestamp,location}], culprit (suspect id), solution (full explanation), supportingEvidence (array of clue/evidence ids).`,
         config: { responseMimeType: "application/json", temperature: 0.8 },
       });
       return validateGeneratedMystery(extractJson(response.text), rules);
     } catch (error) {
       lastError = error;
       const temporaryFailure = isTemporaryUnavailable(error);
-      if (!temporaryFailure) allAttemptsTemporary = false;
-      if (temporaryFailure && attempt === 0 && primaryModel !== fallbackModel) {
-        fallbackOnNextAttempt = true;
+      if (!temporaryFailure) break;
+      if (attempt === models.length - 1) {
+        console.warn("Gemini unavailable; using local fallback mystery.");
+        return validateGeneratedMystery(createLocalMystery(difficulty), rules);
       }
     }
-  }
-  if (allAttemptsTemporary) {
-    console.warn("Gemini unavailable; using local fallback mystery.");
-    return validateGeneratedMystery(createLocalMystery(difficulty), rules);
   }
   console.error("Mystery generation failed validation or provider request:", lastError?.message);
   const error = new Error("We couldn't generate a mystery right now. Please try again.");
