@@ -95,7 +95,27 @@ function validateGeneratedMystery(value, rules) {
 function extractJson(text) {
   if (!text) throw new Error("Gemini returned an empty response");
   const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  return JSON.parse(cleaned);
+  let json = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < cleaned.length; index += 1) {
+    const character = cleaned[index];
+    if (inString) {
+      json += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    if (character === ",") {
+      let next = index + 1;
+      while (/\s/.test(cleaned[next] || "")) next += 1;
+      if (cleaned[next] === "}" || cleaned[next] === "]") continue;
+    }
+    json += character;
+  }
+  return JSON.parse(json);
 }
 
 async function generateMystery(premise, difficulty) {
